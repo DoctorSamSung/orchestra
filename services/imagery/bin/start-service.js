@@ -12,7 +12,8 @@ let service = new Service({
   telemetryHost: process.env.TELEMETRY_HOST,
   telemetryPort: process.env.TELEMETRY_PORT,
   printNew: process.env.PRINT_NEW in ['1', 'true', 'TRUE'],
-  captureInterval: parseFloat(process.env.CAPTURE_INTERVAL) || 2.0
+  captureInterval: parseFloat(process.env.CAPTURE_INTERVAL) || 2.0,
+  maxImages: parseInt(process.env.MAX_IMAGES) || 0
 });
 
 service.start()

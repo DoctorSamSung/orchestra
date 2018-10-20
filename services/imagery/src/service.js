@@ -46,13 +46,15 @@ export default class Service {
     this._telemetryUrl = options.telemetryHost && options.telemetryPort &&
         'http://' + options.telemetryHost + ':' + options.telemetryPort;
     this._captureInterval = options.captureInterval;
+
+    this._maxImages = options.maxImages;
   }
 
   /** Start the service. */
   async start() {
     logger.debug('Starting service.');
 
-    this._imageStore = new ImageStore();
+    this._imageStore = new ImageStore(maxImages = this._maxImages);
     await this._imageStore.setup();
 
     this._imageStore.on('image', id => logger.debug(`Added image ${id}.`));

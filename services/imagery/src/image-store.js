@@ -159,6 +159,8 @@ export default class ImageStore extends EventEmitter {
   /** Remove old images such that the image store is no longer
       above the limit. */
   async purgeImages() {
+    if (!this._maxImages) return;
+
     let db = await this._dbPool.acquire();
 
     await db.run('BEGIN TRANSACTION');
