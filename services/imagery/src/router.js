@@ -12,21 +12,19 @@ router.get('/api/alive', (ctx) => {
   ctx.body = 'Howdy.\n';
 });
 
-router.get('/api/count', (ctx) => {
+router.get('/api/count', async (ctx) => {
   ctx.proto = imagery.ImageCount.create({
     time: Date.now() / 1000,
-    count: ctx.imageStore.getCount()
+    count: await ctx.imageStore.getCount()
   });
 });
 
-router.get('/api/available', (ctx) => {
-  // For now, just return a list from 0 to count - 1 until there's a
-  // proper solution of storing images and so other services can stop
-  // expecting the behavior of just using the count to get images.
+router.get('/api/available', async (ctx) => {
+  const id_list = await ctx.imageStore.getCount();
   ctx.proto = imagery.AvailableImages.create({
     time: Date.now() / 1000,
-    count: ctx.imageStore.getCount(),
-    id_list: Array.from(Array(ctx.imageStore.getCount()).keys())
+    count: id_list.length,
+    id_list
   });
 });
 
@@ -41,12 +39,12 @@ router.get('/api/capture-rate', (ctx) => {
 router.get('/api/image/latest', async (ctx) => {
   // To get the latest image, get the last image id registered. If
   // there are no images at all, 404.
-  const count = ctx.imageStore.getCount();
+  const id = await ctx.imageStore.getLatestId();
 
   if (count === 0) {
     ctx.status = 404;
   } else {
-    ctx.proto = await getImageMessage(ctx.imageStore, count - 1);
+    ctx.proto = await getImageMessage(ctx.imageStore, id);
   }
 });
 
@@ -64,7 +62,7 @@ router.get('/api/image/:id', async (ctx) => {
   const id = parseInt(ctx.params.id);
 
   // 404 if this image doesn't exist.
-  if (Number.isNaN(id) || id < 0 || id >= ctx.imageStore.getCount()) {
+  if (Number.isNaN(id) || !await ctx.imageStore.exists(id)) {
     ctx.status = 404;
   } else {
     ctx.proto = await getImageMessage(ctx.imageStore, id);

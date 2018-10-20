@@ -4,10 +4,13 @@ import path from 'path';
 import fs from 'fs-extra';
 import { sprintf } from 'sprintf-js';
 
+import sqlite from 'sqlite';
+import genericPool from 'generic-pool';
+
 import { imagery } from './messages';
 
 const FOLDER_NAME = '/opt/imagery';
-const COUNT_FILE = path.join(FOLDER_NAME, 'count.json');
+const DB_FILE = path.join(FOLDER_NAME, 'images.sqlite3');
 
 export default class ImageStore extends EventEmitter {
   /**
@@ -16,42 +19,93 @@ export default class ImageStore extends EventEmitter {
    * After creating an object, setup() needs to be called so it can
    * get the folder ready.
    *
-   * Image metadata is stored as JSON. A file called count.json holds
-   * the number of the images taken, so when the image stores starts
+   * Image metadata is stored as JSON. A SQLite database holds
+   * a list of the images taken, so when the image stores starts
    * with an existing directory, it can use the previous images.
    *
    * The rate at which images are added is also stored. Note that
    * this does not take in consideration the timestamp of the images.
+   *
+   * A limit can be placed on the maximum number of images stored by
+   * setting the maxImages parameter. When the limit is reached,
+   * the store will begin deleting old images.
    */
 
   /** Create a new image store. */
-  constructor(clearExisting = false) {
+  constructor(clearExisting = false, maxImages = undefined) {
     super();
 
     this._clearExisting = clearExisting;
-    this._count = 0;
+    this._maxImages = maxImages;
 
     // The time of the last images in the store.
     this._times = [];
+
+    this._dbPool = null;
   }
 
   /** Creates an empty directory for the image store if needed. */
   async setup() {
     if (this._clearExisting === true) {
       await fs.emptyDir(FOLDER_NAME);
-    } else if (await fs.exists(COUNT_FILE)) {
-      // Reading the file and getting the count from there.
-      this._count = JSON.parse(await fs.readFile(COUNT_FILE)).count;
     } else {
-      // If there isn't a count file, we'll make sure this directory
+      // If there isn't a database file, we'll make sure this directory
       // exists.
       await fs.mkdirp(FOLDER_NAME);
+
+      // A connection pool prevents database queries from intefering with
+      // each other while a transaction is occurring. Instead, connections
+      // will wait on each others' transactions to finish before proceeding
+      // execution or starting another transaction.
+      this._dbPool = genericPool.createPool({
+        create: () => sqlite.open(DB_FILE),
+        destroy: (db) => db.close()
+      }, { max: 5, min: 0 });
+
+      let db = await this._dbPool.acquire();
+      await db.run('CREATE TABLE IF NOT EXISTS ' +
+        'images(id INTEGER PRIMARY KEY AUTOINCRMEMENT)');
+      this._dbPool.release(db);
     }
   }
 
   /** Get the number of images stored. */
-  getCount() {
-    return this._count;
+  async getCount() {
+    let db = await this._dbPool.acquire();
+    const count = (await this._db.get('SELECT COUNT(id) FROM images'))['COUNT(id)'];
+    this._dbPool.release(db);
+
+    return count;
+  }
+
+  /** Get a list of image IDs available for retrieval. */
+  async getAvailable() {
+    let db = await this._dbPool.acquire();
+    const available = (await this._db.all('SELECT id FROM images SORT BY id ASC'))
+      .map(row => row.id);
+    this._dbPool.release();
+
+    return available;
+  }
+
+  /** Get the ID of the last image stored. */
+  async getLatestId() {
+    let db = await this._dbPool.acquire();
+    const latest = (await this._db.get(
+      'SELECT id FROM images SORT BY id DESC'))['id'];
+    this._dbPool.release();
+
+    return latest;
+  }
+
+  /** Return whether or not an image exists. */
+  async exists(id) {
+    let db = await this._dbPool.acquire();
+    const exists = await this._db.get('SELECT id FROM images WHERE id = ?', id)
+      !== null;
+    this._dbPool.release();
+
+    return exists;
   }
 
   /**
@@ -60,37 +114,71 @@ export default class ImageStore extends EventEmitter {
    * The metadata attached is the Image proto message without the
    * images included.
    *
-   * Returns the id number for the image (the first one is 0).
+   * Returns the id number for the image (the first one is 1).
    *
    * @param  {Buffer}        image
    * @param  {imagery.Image} metadata
    * @return {Promise.<number>} The id number for the image.
    */
   async addImage(image, metadata) {
-    const id = this._count;
+    let db = await this._dbPool.acquire();
 
-    // Set the id number in the metadata.
-    metadata.id = id;
+    // Allow only one image at a time to be added to the database.
+    await db.run('BEGIN TRANSACTION');
 
-    await this.setImage(id, image);
-    await this.setMetadata(id, metadata);
+    try {
+      await db.run('INSERT INTO images DEFAULT VALUES');
 
-    // Recording the count in case the image store restarts.
-    await fs.writeFile(COUNT_FILE, JSON.stringify(
-      { count: id + 1 }, null, 2
-    ));
+      let id = db.lastID;
 
-    // Adding this to the list for rate calculations.
-    this._recordImageTime();
+      // Set the id number in the metadata.
+      metadata.id = id;
 
-    // The count in incremented towards the end, to prevent image
-    // requests while still writing them.
-    this._count++;
+      await this.setImage(id, image);
+      await this.setMetadata(id, metadata);
 
-    // Broadcast the new image id.
-    this.emit('image', id);
+      // Adding this to the list for rate calculations.
+      this._recordImageTime();
 
-    return id;
+      // Broadcast the new image id.
+      this.emit('image', id);
+
+      await db.exec('COMMIT');
+
+      await this.purgeImages();
+
+      return id;
+    } catch (e) {
+      await db.exec('ROLLBACK');
+      throw e;
+    } finally {
+      this._dbPool.release(db);
+    }
+  }
+
+  /** Remove old images such that the image store is no longer
+      above the limit. */
+  async purgeImages() {
+    let db = await this._dbPool.acquire();
+
+    await db.run('BEGIN TRANSACTION');
+
+    try {
+      while (await this.getCount() > this._maxImages) {
+        let id = (await db.get('SELECT id FROM images SORT BY id ASC'))['id'];
+        await db.run('DELETE FROM images WHERE id = ?', id);
+
+        await this.removeImage(id);
+        await this.removeMetadata(id);
+      }
+
+      await db.run('COMMIT');
+    } catch (e) {
+      await db.run('ROLLBACK');
+      throw e;
+    } finally {
+      this._dbPool.release(db);
+    }
   }
 
   /** Return the image for the id. */
@@ -105,6 +193,13 @@ export default class ImageStore extends EventEmitter {
     let filename = this._formatFilename(id);
 
     await fs.writeFile(filename, image, { encoding: null });
+  }
+
+  /** Delete an image from the file system. */
+  async removeImage(id) {
+    let filename = this._formatFilename(id);
+
+    await fs.unlink(filename);
   }
 
   /** Get the image metadata in the Image protobuf message. */
@@ -125,6 +220,13 @@ export default class ImageStore extends EventEmitter {
     );
 
     await fs.writeFile(filename, contents);
+  }
+
+  /** Delete a metadata file from the file system. */
+  async removeMetadata(id) {
+    let filename = this._formatMetadataFilename(id);
+
+    await fs.unlink(filename);
   }
 
   /** Get the filename for an image by id. */
