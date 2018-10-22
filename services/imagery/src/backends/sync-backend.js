@@ -15,11 +15,6 @@ export default class SyncBackend {
    * from where the imagery originates from.
    *
    * Telemetry data is simply gathered from the original image.
-   * 
-   * This assumes that image IDs are monotonically increasing in
-   * the original image store, but it does not guarantee that
-   * the IDs will remain the same between the source and destination
-   * stores.
    */
 
   /** Create a new sync backend. */
