@@ -79,7 +79,7 @@ export default class SyncBackend {
         .proto(imagery.ImageCount)
         .timeout(5000);
 
-    return msg.id;
+    return msg.count;
   }
 
   /** Get an image from the sync url by id. */
