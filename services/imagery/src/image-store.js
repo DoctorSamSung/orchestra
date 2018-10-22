@@ -72,7 +72,7 @@ export default class ImageStore extends EventEmitter {
   /** Get the number of images stored. */
   async getCount() {
     let db = await this._dbPool.acquire();
-    const count = (await this._db.get('SELECT COUNT(id) FROM images'))['COUNT(id)'];
+    const count = (await db.get('SELECT COUNT(id) FROM images'))['COUNT(id)'];
     this._dbPool.release(db);
 
     return count;
@@ -81,7 +81,7 @@ export default class ImageStore extends EventEmitter {
   /** Get a list of image IDs available for retrieval. */
   async getAvailable() {
     let db = await this._dbPool.acquire();
-    const available = (await this._db.all('SELECT id FROM images SORT BY id ASC'))
+    const available = (await db.all('SELECT id FROM images SORT BY id ASC'))
       .map(row => row.id);
     this._dbPool.release();
 
@@ -91,7 +91,7 @@ export default class ImageStore extends EventEmitter {
   /** Get the ID of the last image stored. */
   async getLatestId() {
     let db = await this._dbPool.acquire();
-    const latest = (await this._db.get(
+    const latest = (await db.get(
       'SELECT id FROM images SORT BY id DESC'))['id'];
     this._dbPool.release();
 
@@ -101,7 +101,7 @@ export default class ImageStore extends EventEmitter {
   /** Return whether or not an image exists. */
   async exists(id) {
     let db = await this._dbPool.acquire();
-    const exists = await this._db.get('SELECT id FROM images WHERE id = ?', id)
+    const exists = await db.get('SELECT id FROM images WHERE id = ?', id)
       !== null;
     this._dbPool.release();
 
@@ -118,18 +118,22 @@ export default class ImageStore extends EventEmitter {
    *
    * @param  {Buffer}        image
    * @param  {imagery.Image} metadata
+   * @param  {number}        id
    * @return {Promise.<number>} The id number for the image.
    */
-  async addImage(image, metadata) {
+  async addImage(image, metadata, id = undefined) {
     let db = await this._dbPool.acquire();
 
     // Allow only one image at a time to be added to the database.
     await db.run('BEGIN TRANSACTION');
 
     try {
-      await db.run('INSERT INTO images DEFAULT VALUES');
-
-      let id = db.lastID;
+      if (id === undefined) {
+        await db.run('INSERT INTO images DEFAULT VALUES');
+        id = db.lastID;
+      } else {
+        await db.run('INSERT INTO images VALUES (?)', id);
+      }
 
       // Set the id number in the metadata.
       metadata.id = id;

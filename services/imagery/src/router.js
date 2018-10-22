@@ -41,7 +41,7 @@ router.get('/api/image/latest', async (ctx) => {
   // there are no images at all, 404.
   const id = await ctx.imageStore.getLatestId();
 
-  if (count === 0) {
+  if (id === undefined) {
     ctx.status = 404;
   } else {
     ctx.proto = await getImageMessage(ctx.imageStore, id);
