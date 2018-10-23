@@ -49,7 +49,7 @@ export default class SyncBackend {
         let missing = remoteAvailable.filter(id => !stored.has(id));
 
         // Getting the images we don't have.
-        missing.forEach((id) => {
+        missing.forEach(async (id) => {
           logger.debug('Fetching image: ' + id);
 
           const msg = await this._getImage(id);
